@@ -5,12 +5,15 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { Construct } from "constructs";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 
+interface ProductsAppStackProps extends cdk.StackProps {
+  eventsDdb: dynamodb.Table;
+}
 export class ProductsAppStack extends cdk.Stack {
   readonly productsFetchHandler: lambdaNodeJS.NodejsFunction;
   readonly productsAdminHandler: lambdaNodeJS.NodejsFunction;
   readonly productsDdb: dynamodb.Table;
 
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: ProductsAppStackProps) {
     super(scope, id, props);
     this.productsDdb = new dynamodb.Table(this, "ProductsDdb", {
       tableName: "products",
@@ -36,6 +39,42 @@ export class ProductsAppStack extends cdk.Stack {
       productsLayerArn
     );
 
+    // product events layer
+    const productEventsLayerArn = ssm.StringParameter.valueForStringParameter(
+      this,
+      "ProductEventsLayerVersionArn"
+    );
+
+    const productEventLayer = lambda.LayerVersion.fromLayerVersionArn(
+      this,
+      "ProductEventsLayerVersionArn",
+      productEventsLayerArn
+    );
+
+    const productEventsHandler = new lambdaNodeJS.NodejsFunction(
+      this,
+      "ProductsEventsFunction",
+      {
+        functionName: "ProductsEventsFunction",
+        entry: "lambda/products/productsEventsFunction.ts",
+        runtime: lambda.Runtime.NODEJS_20_X,
+        handler: "handler",
+        memorySize: 512,
+        timeout: cdk.Duration.seconds(2),
+        bundling: {
+          minify: true,
+          sourceMap: false,
+        },
+        environment: {
+          EVENTS_DDB: props.eventsDdb.tableName,
+        },
+        layers: [productEventLayer],
+        insightsVersion: lambda.LambdaInsightsVersion.VERSION_1_0_119_0,
+      }
+    );
+
+    props.eventsDdb.grantWriteData(productEventsHandler);
+
     this.productsFetchHandler = new lambdaNodeJS.NodejsFunction(
       this,
       "ProductsFetchFunction",
@@ -49,13 +88,12 @@ export class ProductsAppStack extends cdk.Stack {
         bundling: {
           minify: true,
           sourceMap: false,
-          nodeModules: ["aws-xray-sdk-core"],
         },
         environment: {
           PRODUCTS_DDB: this.productsDdb.tableName,
         },
         layers: [productsLayer],
-        tracing: lambda.Tracing.ACTIVE,
+        insightsVersion: lambda.LambdaInsightsVersion.VERSION_1_0_119_0,
       }
     );
     this.productsDdb.grantReadData(this.productsFetchHandler);
@@ -73,15 +111,17 @@ export class ProductsAppStack extends cdk.Stack {
         bundling: {
           minify: true,
           sourceMap: false,
-          nodeModules: ["aws-xray-sdk-core"],
         },
         environment: {
           PRODUCTS_DDB: this.productsDdb.tableName,
+          PRODUCT_EVENTS_FUNCTION_NAME: productEventsHandler.functionName,
         },
-        layers: [productsLayer],
-        tracing: lambda.Tracing.ACTIVE,
+        layers: [productsLayer, productEventLayer],
+        insightsVersion: lambda.LambdaInsightsVersion.VERSION_1_0_119_0,
       }
     );
     this.productsDdb.grantReadWriteData(this.productsAdminHandler);
+    this.productsFetchHandler.grantInvoke(this.productsAdminHandler);
+    productEventsHandler.grantInvoke(this.productsAdminHandler);
   }
 }
