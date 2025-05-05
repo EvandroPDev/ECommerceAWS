@@ -11,6 +11,10 @@ import {
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { DynamoDB } from "@aws-sdk/client-dynamodb";
 
+import * as AWSXRay from "aws-xray-sdk";
+
+AWSXRay.captureAWS(require("aws-sdk"));
+
 const productsDdb = process.env.PRODUCTS_DDB!;
 
 const ddbClient = DynamoDBDocumentClient.from(new DynamoDB({}));
